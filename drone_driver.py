@@ -15,7 +15,30 @@ class MAVLinkDroneDriver:
             self.vehicle.armed = True
             return True
         return False
-
+    
+    def execute_takeoff(self, target_altitude=5.0):
+        """Switches mode to GUIDED and commands the drone to takeoff to a target altitude."""
+        if not self.vehicle.armed:
+            print("[DRONE DRIVER] Cannot takeoff! Drone must be ARMED first.")
+            return False
+            
+        print(f"[DRONE DRIVER] Switching to GUIDED mode...")
+        self.vehicle.mode = VehicleMode("GUIDED")
+        
+        print(f"[DRONE DRIVER] Taking off to target altitude: {target_altitude} meters...")
+        self.vehicle.simple_takeoff(target_altitude)
+        
+        # Monitor altitude climb loop
+        while True:
+            current_alt = self.vehicle.location.global_relative_frame.alt
+            print(f"[DRONE DRIVER] Climbing... Current Altitude: {current_alt:.2f}m")
+            # Break loop when drone reaches 95% of target height
+            if current_alt >= target_altitude * 0.95:
+                print("[DRONE DRIVER] Target takeoff altitude reached! Hovering.")
+                break
+            time.sleep(1)
+        return True
+    
     def change_mode(self, mode_name):
         """Safely shifts flight controller state parameters."""
         if mode_name in ["RTL", "LOITER", "LAND", "GUIDED"]:

@@ -8,6 +8,7 @@ class DroneNLPBrain:
         # Reusable training dataset configuration
         self.training_data = {
             "arm": ["arm the motors", "start engines", "spin up propellers", "turn on motors", "arm vehicle"],
+            "takeoff": ["takeoff", "take off", "launch drone", "fly up", "go airborne", "takeoff to 5 meters", "lift off"],
             "rtl": ["return to launch", "come back home", "fly back to base", "go home", "abort and return"],
             "loiter": ["stay right there", "hover in place", "freeze", "stop moving", "hold position", "hold here"],
             "land": ["land right now", "descend and land", "touchdown", "land the drone", "put it on the ground"],
@@ -19,6 +20,8 @@ class DroneNLPBrain:
             "change_alt_relative_up": ["go up", "climb higher", "increase altitude", "fly higher by", "climb up"],
             "change_alt_relative_down": ["go down", "fly lower", "decrease altitude", "descend by", "go lower by"],
             "unknown_noise": ["what is the weather", "hello there", "testing microphone", "look at that bird", "nice day"]
+            
+
         }
         self.vectorizer = TfidfVectorizer()
         self.classifier = LogisticRegression(class_weight='balanced')

@@ -29,8 +29,6 @@ def run_central_pipeline():
 
     recognizer = sr.Recognizer()
     microphone = sr.Microphone()
-    recognizer.pause_threshold = 0.4
-    recognizer.dynamic_energy_threshold = True
 
     with microphone as source:
         # Force the safety threshold to match or be lower than your pause_threshold
@@ -44,6 +42,7 @@ def run_central_pipeline():
         recognizer.dynamic_energy_threshold = True
         
         print("\n=== SYSTEM IS REUSABLE & MODULARLY ACTIVE ===")
+        voice_reply("Voice flight pipeline active. Awaiting your command.")
         
         while True:
             try:
@@ -60,14 +59,25 @@ def run_central_pipeline():
                     voice_reply("Your message is not correct. Please try again.")
                     continue
 
-                # Process Standard State Operations
-                if intent in ["arm", "rtl", "loiter", "land"]:
+                # --- 1. Process Standard State Operations & Takeoff ---
+                if intent in ["arm", "takeoff", "rtl", "loiter", "land"]:
                     if intent == "arm":
                         if drone.arm_vehicle():
                             log_event(captured_text, intent, confidence, "MOTORS_ARMED")
                             voice_reply("Arming aircraft propulsion motors.")
                         else:
                             voice_reply("The aircraft is already armed.")
+                    
+                    elif intent == "takeoff":
+                        value = brain.extract_number(captured_text)
+                        target_alt = value if value else 5.0  # Safe fallback to 5m
+                        voice_reply(f"Taking off to target altitude of {int(target_alt)} meters.")
+                        
+                        if drone.execute_takeoff(target_alt):
+                            log_event(captured_text, intent, confidence, f"TAKEOFF_ACTIVE_ALT_{target_alt}")
+                        else:
+                            voice_reply("Takeoff aborted. Please confirm the aircraft is armed.")
+                            
                     elif intent == "rtl":
                         drone.change_mode("RTL")
                         log_event(captured_text, intent, confidence, "MODE_RTL")
@@ -81,14 +91,17 @@ def run_central_pipeline():
                         log_event(captured_text, intent, confidence, "MODE_LAND")
                         voice_reply("Landing immediately.")
 
-                # Process Spatial & Altitude Movements
+                # --- 2. Process Spatial & Altitude Movements ---
                 else:
+                    # Enforce critical in-flight safety boundary
                     if not drone.is_flying():
                         log_event(captured_text, intent, confidence, "REJECTED_NOT_IN_AIR")
                         voice_reply("Safety reject. The drone must be in the air first.")
                         continue
 
                     value = brain.extract_number(captured_text)
+                    if not value:
+                        value = 5.0 # Fallback default increment for movements if no number is spoken
                     
                     if intent == "move_forward":
                         drone.send_body_translation(value, 0, 0)
@@ -121,7 +134,7 @@ def run_central_pipeline():
             except sr.UnknownValueError:
                 continue
             except KeyboardInterrupt:
-                print("\nBreaking main run loops.")
+                print("\nShutting down central flight pipeline application loop safely.")
                 break
             except Exception as e:
                 print(f"Runtime Engine Error: {e}")
