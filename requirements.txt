@@ -1,3 +1,10 @@
 pyaudio
 numpy
 faster-whisper
+MAVProxy
+numpy 
+scikit-learn 
+SpeechRecognition 
+dronekit
+pyttsx3
+future
