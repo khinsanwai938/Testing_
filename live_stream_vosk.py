@@ -9,85 +9,93 @@ from vosk import Model, KaldiRecognizer
 # --- Configuration Constants ---
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1024        
-MODEL_PATH = r"C:\Users\16G7IML\Downloads\vosk-model-small-en-us-0.15" # Path to your downloaded extracted Vosk model folder
+MODEL_PATH = r"C:\Users\16G7IML\Downloads\vosk-model-small-en-us-0.15"
+
+# --- NOISE THRESHOLD TUNING ---
+# 300 to 500 = Very quiet room / sensitive mic
+# 800 to 1200 = Standard room with fan noise/typing
+# 1500+ = Loud environment
+SILENCE_THRESHOLD = 800  
 
 def main():
     print("="*60)
-    print(" INITIALIZING DRONE VOICE CONTROL INTERFACE (VOSK) ")
+    print("        VOSK LIVE STREAM TESTER (WITH NOISE GATE)           ")
     print("="*60)
     
     if not os.path.exists(MODEL_PATH):
         print(f"[ERROR] Vosk model not found at '{MODEL_PATH}'.")
-        print("Please download 'vosk-model-small-en-us-0.15' from alphacephei.com/vosk/models")
-        print("and extract it into this directory named as 'model'.")
         sys.exit(1)
 
-    print("Loading Ultra-Low Latency Vosk Engine...")
+    print("Loading Vosk Engine...")
     model = Model(MODEL_PATH)
-    
-    # Drone Keyword Grammar optimization (Optional but helps accuracy):
-    # You can restrict the AI to only listen for specific drone words to prevent false triggers
-    # recognizer = KaldiRecognizer(model, SAMPLE_RATE, '["take off", "land", "hover", "fly forward", "stop"]')
     recognizer = KaldiRecognizer(model, SAMPLE_RATE)
     
     audio_queue = queue.Queue()
     
-    # PyAudio Input Stream Callback
     def stream_callback(in_data, frame_count, time_info, status):
         audio_queue.put(in_data)
         return (None, pyaudio.paContinue)
     
-    # Initialize Hardware Microphone Device
+  # Initialize Hardware Microphone Device
     p = pyaudio.PyAudio()
     stream = p.open(
         format=pyaudio.paInt16,
-        channels=1,
+        channels=4,                # <-- CHANGED TO 4 (Matches Index 1 specs)
         rate=SAMPLE_RATE,
         input=True,
+        input_device_index=1,      # <-- CHANGED TO 1 (Your Intel Mic Array)
         frames_per_buffer=CHUNK_SIZE,
         stream_callback=stream_callback
     )
     
-    print("\n" + "[READY] Drone System listening for commands instantly...")
+    print(f"\n[READY] Noise gate active (Threshold: {SILENCE_THRESHOLD}).")
+    print("Speak clearly into the microphone. Press Ctrl+C to stop.")
     print("="*60)
-    print("🗣️ USER COMMAND DISPLAY:")
-    print("-" * 60)
     
     try:
         stream.start_stream()
-        sys.stdout.write("🎙️ [Listening...] ")
-        sys.stdout.flush()
         
         while stream.is_active():
             try:
                 raw_data = audio_queue.get(timeout=0.1)
                 
-                # Vosk accepts raw int16 bytes directly and checks for phrase endings internally
+                # --- CALCULATE VOLUME LEVEL ---
+                # Convert raw sound bytes into numbers to check how loud it is
+                audio_data = np.frombuffer(raw_data, dtype=np.int16)
+                volume_level = np.sqrt(np.mean(audio_data**2)) if len(audio_data) > 0 else 0
+                
+                # If volume is below our gate, drop it! Keep Vosk from hearing silence.
+                if volume_level < SILENCE_THRESHOLD:
+                    # Print an on-the-fly indicator so you can see the noise gate working
+                    sys.stdout.write(f"\r💤 [Silent Noise Dropped | Vol: {int(volume_level)}]")
+                    sys.stdout.flush()
+                    continue 
+                
+                # --- PROCESS SOUND ONLY WHEN YOU SPEAK ---
                 if recognizer.AcceptWaveform(raw_data):
                     result_json = json.loads(recognizer.Result())
-                    transcript = result_json.get("text", "").strip()
+                    final_text = result_json.get("text", "").strip()
                     
-                    if transcript:
-                        # Clear line and print final command
-                        sys.stdout.write(f"\r💬 User Said: \"{transcript}\"\n")
-                        sys.stdout.write("🎙️ [Ready for next command...] ")
+                    if final_text:
+                        sys.stdout.write(f"\r💬 FINAL TEXT: {final_text}\n")
                         sys.stdout.flush()
                 else:
-                    # Optional: Grab partial results if you want to see text appear mid-sentence
-                    # partial_json = json.loads(recognizer.PartialResult())
-                    # partial_text = partial_json.get("partial", "")
-                    pass
+                    partial_json = json.loads(recognizer.PartialResult())
+                    partial_text = partial_json.get("partial", "").strip()
                     
+                    if partial_text:
+                        sys.stdout.write(f"\r🎙️ Live Processing [Vol: {int(volume_level)}]: {partial_text}")
+                        sys.stdout.flush()
+                        
             except queue.Empty:
                 continue
 
     except KeyboardInterrupt:
-        print("\n\nShutting down Drone Voice Control Pipeline...")
+        print("\n\nTesting stopped.")
     finally:
         stream.stop_stream()
         stream.close()
         p.terminate()
-        print("System safely disconnected.")
 
 if __name__ == "__main__":
     main()
