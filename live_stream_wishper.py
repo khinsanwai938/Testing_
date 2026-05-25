@@ -25,7 +25,7 @@ def main():
     
     # 2. SPEED FIX: Using 'base.en' (74M params) instead of 'large' (809M params) drops math load by 90%.
     # 'cpu_threads=4' forces parallel math execution across your CPU cores.
-    model = WhisperModel("base.en", device="cpu", compute_type="int8", cpu_threads=4)
+    model = WhisperModel("medium.en", device="cpu", compute_type="int8", cpu_threads=4)
     
     audio_queue = queue.Queue()
     
