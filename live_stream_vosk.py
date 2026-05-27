@@ -1,34 +1,32 @@
 import os
 import sys
-import queue
 import json
+import queue
 import numpy as np
 import pyaudio
-from vosk import Model, KaldiRecognizer
+from datetime import datetime
+from vosk import Model, KaldiRecognizer, SetLogLevel
+
+# Mute Vosk/Kaldi internal C++ logging chatter to keep console clean
+SetLogLevel(-1)
 
 # --- Configuration Constants ---
 SAMPLE_RATE = 16000
-CHUNK_SIZE = 1024        
-MODEL_PATH = r"C:\Users\16G7IML\Downloads\vosk-model-small-en-us-0.15"
-
-# --- NOISE THRESHOLD TUNING ---
-# 300 to 500 = Very quiet room / sensitive mic
-# 800 to 1200 = Standard room with fan noise/typing
-# 1500+ = Loud environment
-SILENCE_THRESHOLD = 800  
+CHUNK_SIZE = 1024         
 
 def main():
+    os.system('cls' if os.name == 'nt' else 'clear')
     print("="*60)
-    print("        VOSK LIVE STREAM TEXT DISPLAY (FIXED HARDWARE)     ")
+    print(" INITIALIZING DRONE VOICE CONTROL INTERFACE (VOSK) ")
     print("="*60)
+    print("Loading Stream-Optimized Offline Vosk Engine...")
     
-    if not os.path.exists(MODEL_PATH):
-        print(f"[ERROR] Vosk model not found at '{MODEL_PATH}'.")
-        sys.exit(1)
-
-    print("Loading Vosk Engine...")
-    model = Model(MODEL_PATH)
+    model = Model(lang="en-us")
     recognizer = KaldiRecognizer(model, SAMPLE_RATE)
+    
+    # Generate a unique filename based on the current date and time
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = f"drone_transcript_{timestamp}.txt"
     
     audio_queue = queue.Queue()
     
@@ -36,85 +34,59 @@ def main():
         audio_queue.put(in_data)
         return (None, pyaudio.paContinue)
     
-    # Initialize Hardware Microphone Device
     p = pyaudio.PyAudio()
+    stream = p.open(
+        format=pyaudio.paInt16,
+        channels=1,
+        rate=SAMPLE_RATE,
+        input=True,
+        frames_per_buffer=CHUNK_SIZE,
+        stream_callback=stream_callback
+    )
     
-    try:
-        # Fixed to use Index 1 (Intel Mic Array) with 4 Channels to avoid Vol: 0
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=4,                # Matches your Index 1 hardware requirement
-            rate=SAMPLE_RATE,
-            input=True,
-            input_device_index=1,      # Targets your active Intel Smart Sound Array
-            frames_per_buffer=CHUNK_SIZE,
-            stream_callback=stream_callback
-        )
-    except Exception as e:
-        print(f"\n[ERROR] Failed to open Index 1. Trying fallback Index 17 (2 Channels)...")
-        try:
-            stream = p.open(
-                format=pyaudio.paInt16,
-                channels=2,
-                rate=SAMPLE_RATE,
-                input=True,
-                input_device_index=17,
-                frames_per_buffer=CHUNK_SIZE,
-                stream_callback=stream_callback
-            )
-        except Exception as fallback_error:
-            print(f"[CRITICAL ERROR] Could not open microphone channels: {fallback_error}")
-            p.terminate()
-            sys.exit(1)
-    
-    print(f"\n[READY] Noise gate active (Threshold: {SILENCE_THRESHOLD}).")
-    print("Speak clearly into the microphone. Press Ctrl+C to stop.")
+    print(f"\n[SUCCESS] Saving text history directly to: {output_filename}")
+    print("[READY] Drone System listening for commands...")
     print("="*60)
     
     try:
         stream.start_stream()
         
-        while stream.is_active():
-            try:
-                raw_data = audio_queue.get(timeout=0.1)
-                
-                # Calculate live sound volume level
-                audio_data = np.frombuffer(raw_data, dtype=np.int16)
-                volume_level = np.sqrt(np.mean(audio_data**2)) if len(audio_data) > 0 else 0
-                
-                # Noise Gate: If the room is silent, drop data before Vosk processes it
-                if volume_level < SILENCE_THRESHOLD:
-                    sys.stdout.write(f"\r💤 [Silent Noise Filtered | Vol: {int(volume_level)}]")
-                    sys.stdout.flush()
-                    continue 
-                
-                # Send valid audio to the speech engine
-                if recognizer.AcceptWaveform(raw_data):
-                    # Final stabilized sentence output when you take a small pause
-                    result_json = json.loads(recognizer.Result())
-                    final_text = result_json.get("text", "").strip()
+        # Open the text file in append mode ('a') with UTF-8 encoding
+        with open(output_filename, "a", encoding="utf-8") as f:
+            while stream.is_active():
+                try:
+                    raw_data = audio_queue.get(timeout=0.1)
                     
-                    if final_text:
-                        sys.stdout.write(f"\r💬 FINAL TEXT: {final_text}\n")
-                        sys.stdout.flush()
-                else:
-                    # Real-time rapid feedback as you speak words
-                    partial_json = json.loads(recognizer.PartialResult())
-                    partial_text = partial_json.get("partial", "").strip()
-                    
-                    if partial_text:
-                        sys.stdout.write(f"\r🎙️ Live Processing [Vol: {int(volume_level)}]: {partial_text}")
-                        sys.stdout.flush()
+                    if recognizer.AcceptWaveform(raw_data):
+                        result_json = json.loads(recognizer.Result())
+                        transcript = result_json.get("text", "").strip()
                         
-            except queue.Empty:
-                continue
+                        if transcript:
+                            # Clear the terminal line and print final text
+                            sys.stdout.write("\r".ljust(100) + "\r")
+                            sys.stdout.write(f"Text Transcriptions is: {transcript}\n")
+                            sys.stdout.flush()
+                            
+                            # Save the final transcription to the text file
+                            f.write(f"Text Transcriptions is: {transcript}\n")
+                            f.flush()  # Force write data to disk immediately
+                    else:
+                        partial_json = json.loads(recognizer.PartialResult())
+                        partial_text = partial_json.get("partial", "").strip()
+                        
+                        if partial_text:
+                            # Display live tracking text on screen
+                            sys.stdout.write(f"\rText Transcriptions is: {partial_text}...".ljust(100))
+                            sys.stdout.flush()
+                            
+                except queue.Empty:
+                    continue
 
     except KeyboardInterrupt:
-        print("\n\nTesting stopped.")
+        print("\n\nShutting down Drone Voice Control Pipeline...")
     finally:
-        if 'stream' in locals() and stream.is_active():
-            stream.stop_stream()
-            stream.close()
+        stream.stop_stream()
+        stream.close()
         p.terminate()
         print("System safely disconnected.")
 
