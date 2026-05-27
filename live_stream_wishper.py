@@ -3,130 +3,146 @@ import sys
 import queue
 import numpy as np
 import pyaudio
+import warnings
+from datetime import datetime
 from faster_whisper import WhisperModel
+
+warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 # --- Configuration Constants ---
 SAMPLE_RATE = 16000
 CHUNK_SIZE = 1024        
 MODEL_SIZE = "small" 
-DEVICE = "cpu"            # Can be changed to "cuda" if utilizing an external GPU 
+DEVICE = "cpu"            
 COMPUTE_TYPE = "int8"     
 
-# --- NOISE THRESHOLD TUNING ---
-SILENCE_THRESHOLD = 800  
+# --- PHRASE SPLITTING CONFIGURATION ---
+SILENCE_THRESHOLD = 600      # Volume cutoff for noise. Increase if your room has a loud PC fan.
+SILENCE_WINDOW = 1.2         # Pause length (seconds) required to finalize a sentence.
 
 def main():
-    print("="*60)
-    print("        WHISPER LIVE STREAM AUTOMATIC TEXT DISPLAY        ")
-    print("="*60)
+    os.system('cls' if os.name == 'nt' else 'clear')
     
-    print(f"Loading Whisper Engine ({MODEL_SIZE})...")
+    print("Loading AI Speech Engine (Faster-Whisper)...")
     try:
         model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
     except Exception as e:
         print(f"[CRITICAL ERROR] Failed to load Whisper engine: {e}")
         sys.exit(1)
         
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = f"whisper_transcript_{timestamp}.txt"
+    
+    os.system('cls' if os.name == 'nt' else 'clear')
+    print("=== COLD RESET PHRASE TRANSCRIPTION ===")
+    print(f" Saving text history to: {output_filename}")
+    print(" (Speak a sentence, pause briefly to print, then speak the next.)\n")
+    print("="*60)
+
     audio_queue = queue.Queue()
     audio_buffer = np.zeros(0, dtype=np.float32)
     
+    continuous_silence_time = 0.0
+    has_spoken_in_phrase = False
+
     def stream_callback(in_data, frame_count, time_info, status):
         audio_queue.put(in_data)
         return (None, pyaudio.paContinue)
     
-    # Initialize Hardware Microphone Device
     p = pyaudio.PyAudio()
     
     try:
         stream = p.open(
             format=pyaudio.paInt16,
-            channels=4,                
+            channels=1, # Mono                
             rate=SAMPLE_RATE,
             input=True,
-            input_device_index=1,      # Targets your active Intel Smart Sound Array
             frames_per_buffer=CHUNK_SIZE,
             stream_callback=stream_callback
         )
-        print("[SUCCESS] Microphone connected.")
     except Exception as e:
-        print(f"\n[ERROR] Failed to open Index 1. Trying fallback Index 17...")
-        try:
-            stream = p.open(
-                format=pyaudio.paInt16,
-                channels=2,
-                rate=SAMPLE_RATE,
-                input=True,
-                input_device_index=17,
-                frames_per_buffer=CHUNK_SIZE,
-                stream_callback=stream_callback
-            )
-            print("[SUCCESS] Fallback microphone connected.")
-        except Exception as fallback_error:
-            print(f"[CRITICAL ERROR] Could not open microphone channels: {fallback_error}")
-            p.terminate()
-            sys.exit(1)
-    
-    print("\n[READY] Speak clearly into the microphone. Press Ctrl+C to stop.")
-    print("="*60)
-    
-    # Keep track of what we printed last to handle terminal line clearing smoothly
-    last_printed_len = 0
+        print(f"[CRITICAL ERROR] Could not open microphone: {e}")
+        p.terminate()
+        sys.exit(1)
     
     try:
         stream.start_stream()
         
-        while stream.is_active():
-            try:
-                raw_data = audio_queue.get(timeout=0.1)
-                
-                # Convert raw byte chunks to standard int16 for Noise Gate logic
-                audio_data_int16 = np.frombuffer(raw_data, dtype=np.int16)
-                volume_level = np.sqrt(np.mean(audio_data_int16**2)) if len(audio_data_int16) > 0 else 0
-                
-                # Noise Gate: If room is silent, clear the buffer and skip processing
-                if volume_level < SILENCE_THRESHOLD:
-                    if len(audio_buffer) > 0:
-                        audio_buffer = np.zeros(0, dtype=np.float32)
-                    continue 
-                
-                # Convert audio data to Whisper's required float32 format
-                audio_data_float32 = audio_data_int16.astype(np.float32) / 32768.0
-                audio_buffer = np.concatenate((audio_buffer, audio_data_float32))
-                
-                # Transcribe speech context buffer
-                segments, info = model.transcribe(
-                    audio_buffer, 
-                    language="en", 
-                    beam_size=5,
-                    vad_filter=True,
-                    initial_prompt="Live text stream captions."
-                )
-                
-                text_outputs = [segment.text for segment in segments]
-                full_text = " ".join(text_outputs).strip()
-                
-                if full_text:
-                    # Construct a clean text string without any volume numbers or codes
-                    output_line = f"\r{full_text}"
+        with open(output_filename, "a", encoding="utf-8") as f:
+            while stream.is_active():
+                try:
+                    raw_data = audio_queue.get(timeout=0.1)
+                    audio_data_int16 = np.frombuffer(raw_data, dtype=np.int16)
                     
-                    # Pad out old text on screen with spaces if current text is shorter
-                    if len(output_line) < last_printed_len:
-                        output_line += " " * (last_printed_len - len(output_line))
+                    if len(audio_data_int16) == 0:
+                        continue
+                    
+                    # Calculate real-time amplitude/volume
+                    mean_square = np.mean(audio_data_int16.astype(np.float64)**2)
+                    volume_level = np.sqrt(mean_square) if mean_square > 0 else 0
+                    chunk_duration = len(audio_data_int16) / SAMPLE_RATE
+                    
+                    if volume_level < SILENCE_THRESHOLD:
+                        continuous_silence_time += chunk_duration
+                    else:
+                        continuous_silence_time = 0.0
+                        has_spoken_in_phrase = True
+                    
+                    audio_data_float32 = audio_data_int16.astype(np.float32) / 32768.0
+                    audio_buffer = np.concatenate((audio_buffer, audio_data_float32))
+                    
+                    # Scenario A: User is talking -> Live preview updates on the same line
+                    if has_spoken_in_phrase and continuous_silence_time < SILENCE_WINDOW:
+                        if len(audio_buffer) % (SAMPLE_RATE // 2) == 0: 
+                            segments, _ = model.transcribe(
+                                audio_buffer, 
+                                language="en", 
+                                beam_size=2, 
+                                vad_filter=True,
+                                condition_on_previous_text=False, # Anti-loop fix
+                                temperature=0.0
+                            )
+                            text = " ".join([seg.text for seg in segments]).strip()
+                            if text:
+                                print(f"\rListening: {text}", end="", flush=True)
+                    
+                    # Scenario B: User paused -> Freeze final text, drop a line, and nuke everything
+                    elif has_spoken_in_phrase and continuous_silence_time >= SILENCE_WINDOW:
+                        segments, _ = model.transcribe(
+                            audio_buffer, 
+                            language="en", 
+                            beam_size=3, 
+                            vad_filter=True,
+                            condition_on_previous_text=False, # Anti-loop fix
+                            temperature=0.0
+                        )
+                        final_text = " ".join([seg.text for seg in segments]).strip()
                         
-                    sys.stdout.write(output_line)
-                    sys.stdout.flush()
-                    last_printed_len = len(output_line.strip())
-                
-                # Prevent buffer from accumulating over 20 seconds of old audio context
-                max_buffer_len = SAMPLE_RATE * 20
-                if len(audio_buffer) > max_buffer_len:
-                    audio_buffer = audio_buffer[-max_buffer_len:]
+                        if final_text:
+                            # Clear line and cleanly print finalized sentence
+                            sys.stdout.write("\r" + " " * 120 + "\r")
+                            print(f"Sentence: {final_text}")
+                            
+                            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {final_text}\n")
+                            f.flush()
                         
-            except queue.Empty:
-                continue
+                        # COLD RESET STATE
+                        audio_buffer = np.zeros(0, dtype=np.float32)
+                        has_spoken_in_phrase = False
+                        continuous_silence_time = 0.0
+                        
+                        # Completely clear background queue so old background whispers don't spill over
+                        while not audio_queue.empty():
+                            try:
+                                audio_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        
+                except queue.Empty:
+                    continue
 
     except KeyboardInterrupt:
-        print("\n\nStream stopped.")
+        print("\n\nStream stopped by user.")
     finally:
         if 'stream' in locals() and stream.is_active():
             stream.stop_stream()
