@@ -28,6 +28,33 @@ MATCH_THRESHOLD = 75.0  # Scores above 75% will trigger the action
 
 # Synonyms dictionary mapping commands to intent phrases
 COMMAND_DICTIONARY = {
+    "ARM": [
+        "arm the drone",
+        "arm engines",
+        "turn on motors",
+        "system unlock",
+        "engage motors",
+        "start up the drone",
+        "Unlock flight controller",
+        "System arm",
+        "Arm",
+        "Turn on the drone",
+        "Let's ready the drone for flight",
+        "Get the props spinning"
+    ],
+    "DISARM": [
+        "disarm the drone",
+        "disarm engines",
+        "cut power",
+        "turn off motors",
+        "kill the motors",
+        "stop the propellers",
+        "lock system",
+        "Cut the engines",
+        "Shut down the engines",
+        "Power down the drone",
+        "Okay, you can turn off the power now"
+    ],
     "TAKEOFF": [
         "take off", 
         "launch drone", 
@@ -35,7 +62,10 @@ COMMAND_DICTIONARY = {
         "go up", 
         "lift off", 
         "begin flight",
-        "fly up"
+        "fly up",
+        "Fly up into the air",
+        "Lift off the ground",
+        "Go ahead"
     ],
     "RTL": [
         "return to launch", 
@@ -44,7 +74,15 @@ COMMAND_DICTIONARY = {
         "return home", 
         "rtl", 
         "land at base",
-        "fly back"
+        "fly back",
+        "Retrun to base",
+        "Go to home position",
+        "Fly back to where you started",
+        "Bring the drone back to me",
+        "Time to come home",
+        "Bring it back",
+        "Retrun and Land",
+        "Go back and Land"
     ]
 }
 
@@ -55,7 +93,13 @@ def execute_drone_command(command_type, matched_phrase, score):
     print(f" (Matched with '{matched_phrase}' | Confidence: {score:.1f}%)")
     print("="*50 + "\n")
     
-    if command_type == "TAKEOFF":
+    if command_type == "ARM":
+        # vehicle.armed = True goes here
+        pass
+    elif command_type == "DISARM":
+        # vehicle.armed = False goes here
+        pass
+    elif command_type == "TAKEOFF":
         # drone.arm_and_takeoff() goes here
         pass
     elif command_type == "RTL":
@@ -101,7 +145,7 @@ def main():
     
     os.system('cls' if os.name == 'nt' else 'clear')
     print("=== FUZZY VOICE COMMAND SYSTEM STARTED ===")
-    print(f" Try saying variations like: 'Please fly back home' or 'Launch drone'")
+    print(f" Try saying variations like: 'Arm the drone', 'Cut power', or 'Launch drone'")
     print(" (Speak a sentence, then pause briefly to send it)\n")
     print("="*60)
 
