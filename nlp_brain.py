@@ -6,11 +6,11 @@ from faster_whisper import WhisperModel
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
-DRONE_PROMPT = (
-    "arm disarm takeoff land loiter RTL return to launch "
-    "move forward move backward move left move right "
-    "hold position fly up go home "
-    "camera zoom record video take photo stabilize altitude hold degrees meters"
+UNIVERSAL_AIRCRAFT_PROMPT = (
+    "arm disarm takeoff land loiter RTL return to launch plane drone flight "
+    "move forward move backward move left move right climb descend pitch up pitch down "
+    "speed up slow down increase airspeed turn left turn right bank left bank right "
+    "hold position fly up go home stabilized fbwa glide meters seconds"
 )
 
 class DroneNLPBrain:
@@ -39,7 +39,7 @@ class DroneNLPBrain:
             language="en",
             beam_size=5,
             best_of=5 if final else 1,
-            initial_prompt=DRONE_PROMPT,
+            initial_prompt=UNIVERSAL_AIRCRAFT_PROMPT,
             condition_on_previous_text=False,
             temperature=[0.0, 0.2, 0.4],
             compression_ratio_threshold=2.4,
@@ -49,7 +49,6 @@ class DroneNLPBrain:
         )
 
         no_speech_prob = getattr(info, 'no_speech_prob', 0.0)
-        
         if no_speech_prob > 0.55:
             print(f"[NLP BRAIN] Low speech confidence ({no_speech_prob:.2f}) — discarding segment.")
             return ""

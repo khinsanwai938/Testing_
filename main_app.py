@@ -11,10 +11,12 @@ from datetime import datetime
 from nlp_brain import DroneNLPBrain
 from drone_driver import MAVLinkDroneDriver
 
+# --- Global Configurations ---
 TEST_MODE = False
-is_tts_talking = False  # Global flag to block microphone interception
+is_tts_talking = False  # Global safety watchdog flag to gate microphone input
 
 def voice_reply(text):
+    """Triggers non-blocking text-to-speech output in a background thread."""
     global is_tts_talking
     print(f"[System Speak] -> \"{text}\"")
     
@@ -28,9 +30,15 @@ def voice_reply(text):
             engine.setProperty('rate', 170)
             engine.say(text)
             engine.runAndWait()
+            
+            # Explicitly stop the event loop before deleting to prevent threading leak
+            try:
+                engine.endLoop()
+            except:
+                pass
             del engine
             
-            time.sleep(0.4)        # Cool-down to let room echo dissipate completely
+            time.sleep(0.4)        # Cool-down window to let acoustic room echo dissipate
         except Exception as e:
             print(f"[TTS ERROR] Background speech failed: {e}")
         finally:
@@ -40,6 +48,7 @@ def voice_reply(text):
 
 
 def log_event(raw_text, intent, confidence, outcome):
+    """Maintains an append-only system execution file log."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with open("voice_flight_commands.log", "a") as f:
         f.write(
@@ -48,10 +57,10 @@ def log_event(raw_text, intent, confidence, outcome):
         )
 
 
-def calibrate_silence_threshold(p, sample_rate=16000, chunk_size=1024, duration=1.5):
+def calibrate_silence_threshold(p, sample_rate=16000, chunk_size=1024, duration=1):
+    """Measures environmental acoustic variations to establish a baseline VAD limit."""
     print("[CALIBRATION] Measuring your ambient noise floor...")
-    print("[CALIBRATION] Please stay silent for 1.5 seconds...")
-
+    
     stream = p.open(
         format=pyaudio.paInt16, channels=1,
         rate=sample_rate, input=True,
@@ -68,17 +77,106 @@ def calibrate_silence_threshold(p, sample_rate=16000, chunk_size=1024, duration=
     stream.close()
 
     all_samples = np.concatenate(frames).astype(np.float64)
-    noise_rms = np.sqrt(np.mean(all_samples ** 2))
+    noise_rms = np.sqrt(np.mean(all_samples ** 2)) if len(all_samples) > 0 else 0.0
     threshold = float(np.clip(noise_rms * 1.8, 300, 2000))
 
     print(f"[CALIBRATION] Noise floor RMS: {noise_rms:.1f} → Silence threshold: {threshold:.1f}")
     return threshold
 
 
-def run_central_pipeline():
+def execute_drone_command(captured_text: str, brain: DroneNLPBrain, drone: MAVLinkDroneDriver) -> None:
+    """
+    Parses a recognized textual command, matches it against flight intents,
+    and runs specific MAVLink/Drone actions.
+    """
+    if not captured_text:
+        return
+
+    intent, confidence = brain.match_intent(captured_text)
+
+    if intent == "invalid_command":
+        log_event(captured_text, "REJECTED", confidence, "USER_ALERTED_INVALID")
+        voice_reply("Command not recognized. Please try again.")
+        return
+
+    # --- System State Adjustments ---
+    if intent == "arm":
+        if drone.arm_vehicle():
+            log_event(captured_text, intent, confidence, "MOTORS_ARMED")
+            voice_reply("Arming aircraft propulsion motors.")
+        else:
+            voice_reply("The aircraft failed safety checks or is already armed.")
+
+    elif intent == "disarm":
+        if drone.disarm_vehicle():
+            log_event(captured_text, intent, confidence, "MOTORS_DISARMED")
+            voice_reply("Disarming propulsion systems safely.")
+        else:
+            voice_reply("Disarm command failed. Verify vehicle safety locks.")
+
+    elif intent == "takeoff":
+        value = brain.extract_number(captured_text)
+        target_alt = value if value else 5.0
+        voice_reply(f"Taking off to target altitude of {int(target_alt)} meters.")
+        if drone.execute_takeoff(target_alt):
+            log_event(captured_text, intent, confidence, f"TAKEOFF_ACTIVE_ALT_{target_alt}")
+        else:
+            voice_reply("Takeoff sequence aborted.")
+
+    # --- Standard Flight Modes ---
+    elif intent == "rtl":
+        drone.change_mode("GUIDED")
+        time.sleep(0.1)
+        drone.change_mode("RTL")
+        log_event(captured_text, intent, confidence, "MODE_RTL")
+        voice_reply("Command verified. Returning back to home base.")
+
+    elif intent == "loiter":
+        drone.change_mode("GUIDED")
+        time.sleep(0.1)
+        drone.change_mode("LOITER")
+        log_event(captured_text, intent, confidence, "MODE_LOITER")
+        voice_reply("Position hold engaged. Loitering.")
+
+    elif intent == "land":
+        drone.change_mode("LAND")
+        log_event(captured_text, intent, confidence, "MODE_LAND")
+        voice_reply("Landing immediately.")
+
+    # --- Translational Movements (Requires Airborne Safety Check) ---
+    else:
+        if not drone.is_flying():
+            log_event(captured_text, intent, confidence, "REJECTED_NOT_IN_AIR")
+            voice_reply("Safety reject. The drone must be airborne first.")
+            return
+
+        value = brain.extract_number(captured_text) if brain.extract_number(captured_text) else 5.0
+
+        if intent == "move_forward":
+            drone.send_body_translation(value, 0, 0)
+            voice_reply(f"Moving forward {int(value)} meters.")
+        elif intent == "move_backward":
+            drone.send_body_translation(-value, 0, 0)
+            voice_reply(f"Moving backward {int(value)} meters.")
+        elif intent == "move_left":
+            drone.send_body_translation(0, -value, 0)
+            voice_reply(f"Moving left {int(value)} meters.")
+        elif intent == "move_right":
+            drone.send_body_translation(0, value, 0)
+            voice_reply(f"Moving right {int(value)} meters.")
+
+        log_event(captured_text, intent, confidence, f"MOVE_EXEC_VAL_{value}")
+
+
+def start_voice_flight_system():
+    """
+    Main orchestration loop. Collects incoming microphone stream vectors or 
+    keyboard characters and handles real-time Voice Activity Detection (VAD).
+    """
     os.system('cls' if os.name == 'nt' else 'clear')
 
     brain = DroneNLPBrain()
+    # Connect driver to standard software-in-the-loop firmware endpoint
     drone = MAVLinkDroneDriver(connection_string='127.0.0.1:14552')
 
     print("\n=== VOX-FLIGHT SYSTEM INTEGRATION PIPELINE ACTIVE ===")
@@ -95,6 +193,7 @@ def run_central_pipeline():
     has_spoken   = False
 
     def stream_callback(in_data, frame_count, time_info, status):
+        # Insert zero-padded silence if the drone is talking to stop echo looping
         if is_tts_talking:
             audio_queue.put(b'\x00' * len(in_data)) 
         else:
@@ -129,20 +228,22 @@ def run_central_pipeline():
             if TEST_MODE:
                 print("\n[ TEST MODE ]")
                 captured_text = input("Enter command: ").lower().strip()
-                if not captured_text: continue
+                if not captured_text: 
+                    continue
             else:
                 try:
                     raw_data = audio_queue.get(timeout=0.1)
                 except queue.Empty:
-                    if drone.vehicle.armed:
-                        current_alt = drone.vehicle.location.global_relative_frame.alt
-                        alt_val = current_alt if current_alt is not None else 0.0
+                    # Abstracted safe backend status checking
+                    if drone.is_flying():
+                        alt_val = drone._get_altitude() if hasattr(drone, '_get_altitude') else 0.0
                         sys.stdout.write(f"\r[Telemetry Update] Altitude: {alt_val:.2f}m")
                         sys.stdout.flush()
                     continue
 
                 audio_int16 = np.frombuffer(raw_data, dtype=np.int16)
-                if len(audio_int16) == 0: continue
+                if len(audio_int16) == 0: 
+                    continue
 
                 volume = np.sqrt(np.mean(audio_int16.astype(np.float64) ** 2)) if np.mean(audio_int16**2) > 0 else 0.0
                 chunk_dur = len(audio_int16) / SAMPLE_RATE
@@ -169,6 +270,7 @@ def run_central_pipeline():
                     print("\n[STT] Processing utterance...")
                     captured_text = brain.transcribe_audio(audio_buffer, final=True)
                     
+                    # Reset audio parameters for next command cycle
                     audio_buffer = np.zeros(0, dtype=np.float32)
                     has_spoken = False
                     silence_time = 0.0
@@ -182,84 +284,16 @@ def run_central_pipeline():
 
                     print(f'[STT] Transcribed: "{captured_text}"')
 
+            # --- Execution Dispatcher ---
             if captured_text:
-                intent, confidence = brain.match_intent(captured_text)
+                execute_drone_command(captured_text, brain, drone)
                 
+                # Flush trailing microphone frame garbage generated during voice command delays
                 while not audio_queue.empty():
                     try:
                         audio_queue.get_nowait()
                     except queue.Empty:
                         break
-
-                if intent == "invalid_command":
-                    log_event(captured_text, "REJECTED", confidence, "USER_ALERTED_INVALID")
-                    voice_reply("Command not recognized. Please try again.")
-                    continue
-
-                if intent == "arm":
-                    if drone.arm_vehicle():
-                        log_event(captured_text, intent, confidence, "MOTORS_ARMED")
-                        voice_reply("Arming aircraft propulsion motors.")
-                    else:
-                        voice_reply("The aircraft is already armed or failed safety checks.")
-
-                elif intent == "disarm":
-                    if drone.disarm_vehicle():
-                        log_event(captured_text, intent, confidence, "MOTORS_DISARMED")
-                        voice_reply("Disarming propulsion systems safely.")
-                    else:
-                        voice_reply("Disarm command failed. Verify vehicle safety locks.")
-
-                elif intent == "takeoff":
-                    value = brain.extract_number(captured_text)
-                    target_alt = value if value else 5.0
-                    voice_reply(f"Taking off to target altitude of {int(target_alt)} meters.")
-                    if drone.execute_takeoff(target_alt):
-                        log_event(captured_text, intent, confidence, f"TAKEOFF_ACTIVE_ALT_{target_alt}")
-                    else:
-                        voice_reply("Takeoff sequence aborted.")
-
-                elif intent == "rtl":
-                    drone.change_mode("GUIDED")
-                    time.sleep(0.1)
-                    drone.change_mode("RTL")
-                    log_event(captured_text, intent, confidence, "MODE_RTL")
-                    voice_reply("Command verified. Returning back to home base.")
-
-                elif intent == "loiter":
-                    drone.change_mode("GUIDED")
-                    time.sleep(0.1)
-                    drone.change_mode("LOITER")
-                    log_event(captured_text, intent, confidence, "MODE_LOITER")
-                    voice_reply("Position hold engaged. Loitering.")
-
-                elif intent == "land":
-                    drone.change_mode("LAND")
-                    log_event(captured_text, intent, confidence, "MODE_LAND")
-                    voice_reply("Landing immediately.")
-
-                else:
-                    if not drone.is_flying():
-                        log_event(captured_text, intent, confidence, "REJECTED_NOT_IN_AIR")
-                        voice_reply("Safety reject. The drone must be airborne first.")
-                        continue
-
-                    value = brain.extract_number(captured_text) if brain.extract_number(captured_text) else 5.0
-
-                    if intent == "move_forward":
-                        drone.send_body_translation(value, 0, 0)
-                        voice_reply(f"Moving forward {int(value)} meters.")
-                    elif intent == "move_backward":
-                        drone.send_body_translation(-value, 0, 0)
-                        voice_reply(f"Moving backward {int(value)} meters.")
-                    elif intent == "move_left":
-                        drone.send_body_translation(0, -value, 0)
-                        voice_reply(f"Moving left {int(value)} meters.")
-                    elif intent == "move_right":
-                        drone.send_body_translation(0, value, 0)
-                        voice_reply(f"Moving right {int(value)} meters.")
-
-                    log_event(captured_text, intent, confidence, f"MOVE_EXEC_VAL_{value}")
 
         except KeyboardInterrupt:
             print("\nShutting down safety systems cleanly...")
@@ -267,6 +301,7 @@ def run_central_pipeline():
         except Exception as e:
             print(f"[ERROR] Pipeline runtime error: {e}")
 
+    # --- Resource Cleanup Phase ---
     if not TEST_MODE:
         if 'stream' in locals() and stream.is_active():
             stream.stop_stream()
@@ -276,5 +311,6 @@ def run_central_pipeline():
     drone.close()
     print("[SYSTEM] Pipeline terminated cleanly.")
 
+
 if __name__ == "__main__":
-    run_central_pipeline()
+    start_voice_flight_system()

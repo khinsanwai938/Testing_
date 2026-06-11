@@ -8,3 +8,5 @@ SpeechRecognition
 dronekit
 pyttsx3
 future
+silero-vad
+moonshine-voice
