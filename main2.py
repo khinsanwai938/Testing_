@@ -12,7 +12,7 @@ except ImportError:
     pythoncom = None
 from datetime import datetime
 
-from llm_con import DroneNLPEngine
+from connection import DroneNLPEngine
 from driver import MAVLinkDroneDriver
 
 TEST_MODE = True
@@ -22,7 +22,6 @@ is_tts_talking = False  # Global flag to block microphone during TTS playback
 # ======================================================================
 # Text-to-speech
 # ======================================================================
-
 def voice_reply(text: str):
     global is_tts_talking
     print(f"[SYSTEM SPEAK] -> \"{text}\"")
@@ -98,10 +97,33 @@ def calibrate_silence_threshold(p, sample_rate=16000, chunk_size=1024,
 
 def run_central_pipeline():
     os.system('cls' if os.name == 'nt' else 'clear')
+    # Detect vehicle type from ArduPilot heartbeat
+    def detect_vehicle_type(drone: MAVLinkDroneDriver) -> str:
+    
+        from pymavlink import mavutil
 
+        msg = drone._get_cached("HEARTBEAT")
+        if msg:
+            # MAV_TYPE_FIXED_WING = 1, MAV_TYPE_QUADROTOR = 2 etc.
+            fixed_wing_types = {
+                mavutil.mavlink.MAV_TYPE_FIXED_WING,
+                mavutil.mavlink.MAV_TYPE_FLAPPING_WING,
+                mavutil.mavlink.MAV_TYPE_VTOL_DUOROTOR,
+                mavutil.mavlink.MAV_TYPE_VTOL_QUADROTOR,
+            }
+            if msg.type in fixed_wing_types:
+                return DroneNLPEngine.VEHICLE_PLANE
+        return DroneNLPEngine.VEHICLE_DRONE
+
+
+    # In main():
     brain = DroneNLPEngine()
     drone = MAVLinkDroneDriver(connection_string="udp:127.0.0.1:14551")
+    time.sleep(1)   # let heartbeat arrive
 
+    # vehicle = detect_vehicle_type(drone)
+    # brain.set_vehicle_type(vehicle)
+    # print(f"[SYSTEM] Vehicle detected: {vehicle}")
     print("\n=== VOX-FLIGHT SYSTEM INTEGRATION PIPELINE ACTIVE ===")
 
     SAMPLE_RATE         = 16000
@@ -477,10 +499,105 @@ def run_central_pipeline():
                     )
                 else:
                     voice_reply("GPS status unavailable.")
+            
+            # Add these branches inside execute_intent() after the existing ones:
+
+            elif intent == "mode_fbwa":
+                success = drone.change_flight_mode("FBWA")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_FBWA")
+                    voice_reply("Switching to Fly By Wire A.")
+                else:
+                    voice_reply("Failed to switch to Fly By Wire A.")
+
+            elif intent == "mode_fbwb":
+                success = drone.change_flight_mode("FBWB")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_FBWB")
+                    voice_reply("Switching to Fly By Wire B.")
+                else:
+                    voice_reply("Failed to switch to Fly By Wire B.")
+
+            elif intent == "mode_cruise":
+                success = drone.change_flight_mode("CRUISE")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_CRUISE")
+                    voice_reply("Entering cruise mode.")
+                else:
+                    voice_reply("Failed to enter cruise mode.")
+
+            elif intent == "mode_auto":
+                success = drone.change_flight_mode("AUTO")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_AUTO")
+                    voice_reply("Switching to auto mission.")
+                else:
+                    voice_reply("Failed to switch to auto mission.")
+
+            elif intent == "mode_guided":
+                success = drone.change_flight_mode("GUIDED")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_GUIDED")
+                    voice_reply("Switching to guided mode.")
+                else:
+                    voice_reply("Failed to switch to guided mode.")
+
+            elif intent == "mode_stabilize":
+                success = drone.change_flight_mode("STABILIZE")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_STABILIZE")
+                    voice_reply("Switching to stabilize.")
+                else:
+                    voice_reply("Failed to switch to stabilize.")
+
+            elif intent == "mode_acro":
+                success = drone.change_flight_mode("ACRO")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_ACRO")
+                    voice_reply("Switching to acro mode.")
+                else:
+                    voice_reply("Failed to switch to acro mode.")
+
+            elif intent == "mode_circle":
+                success = drone.change_flight_mode("CIRCLE")
+                if success:
+                    log_event(captured_text, intent, confidence, "MODE_CIRCLE")
+                    voice_reply("Entering circle mode.")
+                else:
+                    voice_reply("Failed to enter circle mode.")
+
+            elif intent == "glide":
+                drone.set_groundspeed(0.0)
+                success = drone.change_flight_mode("FBWA")
+                if success:
+                    log_event(captured_text, intent, confidence, "GLIDE")
+                    voice_reply("Cutting throttle. Gliding.")
+                else:
+                    voice_reply("Failed to enter glide mode.")
+
+            elif intent == "throttle_up":
+                speed = brain.extract_speed(text) or 15.0
+                success = drone.set_airspeed(speed)
+                if success:
+                    log_event(captured_text, intent, confidence, f"THROTTLE_UP_{speed:.0f}ms")
+                    voice_reply(f"Increasing airspeed to {speed:.0f} metres per second.")
+                else:
+                    voice_reply("Failed to increase airspeed.")
+
+            elif intent == "throttle_down":
+                speed = brain.extract_speed(text) or 8.0
+                success = drone.set_airspeed(speed)
+                if success:
+                    log_event(captured_text, intent, confidence, f"THROTTLE_DOWN_{speed:.0f}ms")
+                    voice_reply(f"Reducing airspeed to {speed:.0f} metres per second.")
+                else:
+                    voice_reply("Failed to reduce airspeed.")
 
             else:
                 log_event(captured_text, intent, confidence, "UNHANDLED_INTENT")
                 voice_reply(f"Command understood as {intent} but no action is mapped.")
+
+            
 
         except KeyboardInterrupt:
             print("\n[SYSTEM] Keyboard interrupt — shutting down cleanly...")

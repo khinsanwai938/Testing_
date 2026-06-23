@@ -305,6 +305,7 @@ class MAVLinkDroneDriver:
         self._altitude_monitor = threading.Thread(target=_monitor, daemon=True)
         self._altitude_monitor.start()
 
+
     def _production_hover_watchdog(self):
         """
         Production-grade background watchdog thread. 
@@ -336,8 +337,8 @@ class MAVLinkDroneDriver:
                 # 2. SILENT ANOMALY TRACKING (Prints exactly ONCE instead of loops)
                 elif remaining == 0 and voltage >= self.BATTERY_MIN_VOLTAGE:
                     if not has_warned_anomaly:
-                        print(f"\n[DRIVER] Telemetry Anomaly: Capacity reports 0% but Voltage is SAFE at {voltage:.2f}V.")
-                        print("[DRIVER] Flight continuing safely. Adjust capacity ratings in Mission Planner later.")
+                        print(f"\n[DRIVER] ⚠️ Telemetry Anomaly: Capacity reports 0% but Voltage is SAFE at {voltage:.2f}V.")
+                        print("[DRIVER] ℹ️ Flight continuing safely. Adjust capacity ratings in Mission Planner later.")
                         has_warned_anomaly = True
                     # FIX 2: Clear other state flags explicitly, but leave has_warned_anomaly intact
                     has_warned_low = False 
@@ -345,7 +346,7 @@ class MAVLinkDroneDriver:
                 # 3. STANDARD LOW BATTERY WARNING
                 elif remaining != -1 and remaining < self.BATTERY_WARN_PCT:
                     if not has_warned_low:
-                        print(f"\n[DRIVER] Low Battery Alert: {remaining}% remaining ({voltage:.2f}V).")
+                        print(f"\n[DRIVER] ⚠️ Low Battery Alert: {remaining}% remaining ({voltage:.2f}V).")
                         has_warned_low = True
                     has_warned_anomaly = False
                 
@@ -414,7 +415,6 @@ class MAVLinkDroneDriver:
         if should_reset:
             print("[DRIVER]Action detected! Resetting hover countdown window.")
             self._start_hover_timer()
-
     def _accept_command(self):
         """
         Called at the top of every movement method that passes the gate.
@@ -602,6 +602,7 @@ class MAVLinkDroneDriver:
     # ======================================================================
     # Public — takeoff  (activates altitude gate)
     # ======================================================================
+
     def change_altitude_absolute(self, target_altitude_meters: float) -> bool:
         """
         Changes altitude in GUIDED mode by updating the local NED target vector.
@@ -877,12 +878,12 @@ class MAVLinkDroneDriver:
         self._move_direction(0.0, 1.0, 0.0, speed, duration)
         return True
 
-    def ascend(self, metres: float = 5.0, speed: float = 1.5) -> bool:
+    def ascend(self, distance: float = 5.0, speed: float = 1.5) -> bool:
         """
-        Climb `metres` relative to current altitude at `speed` m/s.
+        Climb `distance` relative to current altitude at `speed` m/s.
 
-        Voice triggers: "go up", "ascend", "climb X metres",
-                        "go up X metres", "increase altitude"
+        Voice triggers: "go up", "ascend", "climb X meters",
+                        "go up X meters", "increase altitude"
         """
         if not self._is_command_allowed("ascend"):
             return False
@@ -895,36 +896,46 @@ class MAVLinkDroneDriver:
             print("[DRIVER] Cannot read current altitude.")
             return False
 
-        self._accept_command()
-        target_alt = current_alt + metres
-        print(f"[DRIVER] Ascending {metres} m to {target_alt:.1f} m...")
+        # Calculated targets updated to map to the 'distance' variable name
+        target_alt = current_alt + distance
+        print(f"[DRIVER] Ascending {distance} m to {target_alt:.1f} m...")
 
-        timeout  = metres / speed + 10
+        # Dynamic deadline timeout calculation
+        timeout  = distance / speed + 10
         deadline = time.time() + timeout
 
         while time.time() < deadline:
+            # Check for emergency override escape
+            if self._state == self._STATE_EMERGENCY:
+                print("[DRIVER] Ascent halted due to emergency state!")
+                break
+                
             alt = self._get_altitude()
             if alt is None:
                 time.sleep(0.3)
                 continue
+                
+            # Reach target altitude within a 30cm error margin tolerance band
             if alt >= target_alt - 0.3:
                 self.hover()
                 print(f"[DRIVER] Ascent complete — altitude {alt:.2f} m.")
                 return True
-            self.send_body_translation(0.0, 0.0, -speed)   # negative vz = up
+                
+            # MAVLink NED: negative Z velocity streams moving UP
+            self.send_body_translation(0.0, 0.0, -speed)   
             time.sleep(0.2)
 
         self.hover()
-        print("[DRIVER] Ascent timed out.")
+        print("[DRIVER] Ascent timed out or interrupted.")
         return False
 
-    def descend(self, metres: float = 5.0, speed: float = 1.0) -> bool:
+    def descend(self, distance: float = 5.0, speed: float = 1.0) -> bool:
         """
-        Descend `metres` relative to current altitude at `speed` m/s.
+        Descend `distance` relative to current altitude at `speed` m/s.
         Stops at 1 m minimum to avoid unintentional landing.
 
-        Voice triggers: "go down", "descend", "drop X metres",
-                        "go down X metres", "decrease altitude", "lower"
+        Voice triggers: "go down", "descend", "drop X meters",
+                        "go down X meters", "decrease altitude", "lower"
         """
         if not self._is_command_allowed("descend"):
             return False
@@ -937,34 +948,43 @@ class MAVLinkDroneDriver:
             print("[DRIVER] Cannot read current altitude.")
             return False
 
+        # Safety floor logic updated to use 'distance' keyword
         MIN_SAFE_ALT   = 1.0
-        target_alt     = max(current_alt - metres, MIN_SAFE_ALT)
+        target_alt     = max(current_alt - distance, MIN_SAFE_ALT)
         actual_descent = current_alt - target_alt
 
         if actual_descent <= 0:
             print(f"[DRIVER] Already at or below {MIN_SAFE_ALT} m — not descending.")
             return False
 
-        self._accept_command()
         print(f"[DRIVER] Descending {actual_descent:.1f} m to {target_alt:.1f} m...")
 
         timeout  = actual_descent / speed + 10
         deadline = time.time() + timeout
 
         while time.time() < deadline:
+            # Check for emergency override escape
+            if self._state == self._STATE_EMERGENCY:
+                print("[DRIVER] Descent halted due to emergency state!")
+                break
+
             alt = self._get_altitude()
             if alt is None:
                 time.sleep(0.3)
                 continue
+                
+            # Reach target altitude within a 30cm error margin tolerance band
             if alt <= target_alt + 0.3:
                 self.hover()
                 print(f"[DRIVER] Descent complete — altitude {alt:.2f} m.")
                 return True
-            self.send_body_translation(0.0, 0.0, speed)   # positive vz = down
+                
+            # MAVLink NED: positive Z velocity streams moving DOWN
+            self.send_body_translation(0.0, 0.0, speed)   
             time.sleep(0.2)
 
         self.hover()
-        print("[DRIVER] Descent timed out.")
+        print("[DRIVER] Descent timed out or interrupted.")
         return False
 
     def hover(self, duration: float = 0.0) -> bool:
@@ -1028,7 +1048,7 @@ class MAVLinkDroneDriver:
 
     def set_heading(self, heading_degrees: float) -> bool:
         """
-        Point to an absolute compass bearing (0-360°).
+        Point to an absolute compass bearing (0–360°).
         0° = North, 90° = East, 180° = South, 270° = West.
 
         Voice triggers: "face north/south/east/west",
@@ -1179,7 +1199,7 @@ class MAVLinkDroneDriver:
 
     def get_heading(self) -> Optional[float]:
         """
-        Return current compass heading in degrees (0–360), or None.
+        Return current compass heading in degrees (0-360), or None.
 
         Voice triggers: "what direction am I facing", "what is my heading",
                         "compass heading", "which way am I pointing"
